@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Face Recognition Login/Registration</title>
+    <!-- Load Tailwind CSS for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the Face Recognition container */
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            margin: auto;
+            border-radius: 0.75rem; /* rounded-xl */
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); /* shadow-xl */
+            overflow: hidden;
+            background: #1f2937; /* bg-gray-800 */
+        }
+
+        /* Video element must be placed behind the canvas */
+        #video, #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: auto;
+            object-fit: cover;
+        }
+        
+        #video {
+            transform: scaleX(-1); /* Mirror the video feed */
+        }
+
+        /* Canvas will be the same size as the video */
+        #canvas {
+            z-index: 10;
+        }
+
+        /* Ensure the container height adjusts to the video feed (4:3 Aspect Ratio) */
+        .video-container::before {
+            content: '';
+            display: block;
+            padding-top: 75%;
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary-blue': '#3b82f6', // blue-500
+                        'primary-green': '#10b981', // emerald-500
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+
+<body class="bg-gray-100 min-h-screen p-4 flex flex-col items-center justify-center font-sans">
+
+    <div class="max-w-4xl w-full bg-white p-8 rounded-2xl shadow-2xl">
+        <h1 id="main-title" class="text-3xl font-extrabold text-gray-900 mb-6 text-center">
+            Facial Recognition Security System
+        </h1>
+        <p id="status" class="text-center mb-6 p-3 rounded-lg bg-blue-100 text-blue-700 font-medium">
+            Loading models... Please wait.
+        </p>
+
+        <!-- Video and Canvas Container (Shared across all views) -->
+        <div class="video-container mx-auto mb-8">
+            <video id="video" autoplay muted playsinline></video>
+            <canvas id="canvas"></canvas>
+        </div>
+
+        <!-- Dynamic Control Area -->
+        <div id="controlArea">
+            
+            <!-- Login View (Visible on start) -->
+            <div id="loginView" class="view">
+                <h2 class="text-2xl font-bold text-gray-800 mb-4 text-center">Login via Face ID</h2>
+                <div class="flex flex-col gap-4 mb-6">
+                    <input type="text" id="username-login" placeholder="Enter Registered Username"
+                        class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-primary-blue focus:border-primary-blue text-lg" />
+                    <button id="login-btn" class="w-full px-6 py-3 bg-primary-blue hover:bg-blue-600 text-white font-bold rounded-lg shadow-md transition duration-200 disabled:opacity-50"
+                        disabled>
+                        Login with Face
+                    </button>
+                </div>
+                <div class="text-center">
+                    <button id="goToRegisterBtn" class="text-sm text-primary-green hover:text-emerald-600 font-medium transition duration-150">
+                        New user? Go to Registration
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Registration View (Hidden on start) -->
+            <div id="registerView" class="view hidden">
+                <h2 class="text-2xl font-bold text-gray-800 mb-4 text-center">New User Registration</h2>
+                <div class="flex flex-col gap-4 mb-6">
+                    <input type="text" id="username-register" placeholder="Enter Username to Enroll"
+                        class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-primary-green focus:border-primary-green text-lg" />
+                    <button id="enroll-btn" class="w-full px-6 py-3 bg-primary-green hover:bg-emerald-600 text-white font-bold rounded-lg shadow-md transition duration-200 disabled:opacity-50"
+                        disabled>
+                        Enroll Face & Register
+                    </button>
+                </div>
+                <div class="text-center">
+                    <button id="goToLoginBtn" class="text-sm text-primary-blue hover:text-blue-700 font-medium transition duration-150">
+                        Already enrolled? Go to Login
+                    </button>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Database Status (Common) -->
+        <div class="mt-8 p-4 bg-gray-50 rounded-lg border">
+            <h2 class="text-xl font-semibold mb-2">System Status</h2>
+            <p id="db-status" class="text-gray-600">Enrolled Users: 0</p>
+        </div>
+    </div>
+
+    <!-- Load face-api.js library -->
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+
+    <script>
+        // Global references to DOM elements
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const statusEl = document.getElementById('status');
+        const dbStatusEl = document.getElementById('db-status');
+        
+        // View-specific elements
+        const registerView = document.getElementById('registerView');
+        const loginView = document.getElementById('loginView');
+        const goToLoginBtn = document.getElementById('goToLoginBtn');
+        const goToRegisterBtn = document.getElementById('goToRegisterBtn');
+        const usernameRegisterInput = document.getElementById('username-register');
+        const usernameLoginInput = document.getElementById('username-login');
+        const enrollBtn = document.getElementById('enroll-btn');
+        const loginBtn = document.getElementById('login-btn');
+
+
+        // Configuration and State
+        const ENROLLED_KEY = 'faceDescriptorsDB';
+        let faceMatcher = null;
+        let labeledDescriptors = [];
+        let isModelsLoaded = false;
+        let detectionInterval = null;
+        
+        /**
+         * Utility function to switch between the Login and Registration views.
+         * @param {string} viewName - 'login' or 'register'.
+         */
+        function switchView(viewName) {
+            if (viewName === 'login') {
+                loginView.classList.remove('hidden');
+                registerView.classList.add('hidden');
+                // Clear the registration field when switching
+                usernameRegisterInput.value = '';
+                updateStatus('Enter your username and click Login to verify your face.', 'info');
+            } else if (viewName === 'register') {
+                loginView.classList.add('hidden');
+                registerView.classList.remove('hidden');
+                // Clear the login field when switching
+                usernameLoginInput.value = '';
+                updateStatus('Enter a unique username and center your face to Enroll.', 'info');
+            }
+        }
+
+        /**
+         * Utility function to update the status message box.
+         * @param {string} message - The message to display.
+         * @param {string} type - 'loading', 'success', 'error', or 'info'.
+         */
+        function updateStatus(message, type = 'info') {
+            let className = '';
+            switch (type) {
+                case 'loading':
+                    className = 'bg-yellow-100 text-yellow-700';
+                    break;
+                case 'success':
+                    className = 'bg-green-100 text-green-700';
+                    break;
+                case 'error':
+                    className = 'bg-red-100 text-red-700';
+                    break;
+                case 'info':
+                default:
+                    className = 'bg-blue-100 text-blue-700';
+                    break;
+            }
+            statusEl.textContent = message;
+            statusEl.className = `text-center mb-6 p-3 rounded-lg font-medium ${className}`;
+        }
+
+        /**
+         * Step 1: Load Face Recognition Models
+         */
+        async function loadModels() {
+            updateStatus('Loading models (SSD Mobilenet, 68 Landmark, Face Recognition)...', 'loading');
+            try {
+                const modelPath = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights';
+
+                await faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath);
+                await faceapi.nets.faceLandmark68Net.loadFromUri(modelPath);
+                await faceapi.nets.faceRecognitionNet.loadFromUri(modelPath);
+
+                isModelsLoaded = true;
+                updateStatus('Models loaded successfully! Starting camera...', 'success');
+                loadEnrolledFaces();
+                startCamera();
+
+            } catch (error) {
+                console.error("Error loading models:", error);
+                updateStatus('ERROR: Could not load face-api.js models. Check console for details.', 'error');
+            }
+        }
+
+        /**
+         * Step 2: Start the video camera stream.
+         */
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+            } catch (error) {
+                console.error("Error accessing camera:", error);
+                updateStatus('ERROR: Failed to access webcam. Please ensure camera access is allowed.', 'error');
+            }
+        }
+
+        /**
+         * Step 3: Continuously detect faces and draw bounding boxes.
+         */
+        video.addEventListener('play', () => {
+            // Set canvas dimensions to match video
+            const displaySize = { width: video.videoWidth, height: video.videoHeight };
+            faceapi.matchDimensions(canvas, displaySize);
+
+            // Start detection loop
+            detectionInterval = setInterval(async () => {
+                if (!isModelsLoaded) return;
+
+                // Detect faces and compute face descriptors
+                const detections = await faceapi.detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
+                    .withFaceLandmarks()
+                    .withFaceDescriptor();
+
+                // Clear previous drawings
+                const context = canvas.getContext('2d');
+                context.clearRect(0, 0, canvas.width, canvas.height);
+
+                if (detections) {
+                    // Resize detection to fit canvas
+                    const resizedDetections = faceapi.resizeResults(detections, displaySize);
+
+                    // Draw the bounding box
+                    const box = resizedDetections.detection.box;
+                    const drawBox = new faceapi.draw.DrawBox(box, { label: 'Face Detected' });
+                    drawBox.draw(canvas);
+
+                    // Enable buttons if a face is detected
+                    enrollBtn.disabled = false;
+                    loginBtn.disabled = false;
+
+                } else {
+                    // Disable buttons if no face is detected
+                    enrollBtn.disabled = true;
+                    loginBtn.disabled = true;
+                }
+            }, 100); // Run detection every 100ms
+        });
+
+        /**
+         * Step 4: Handle Enrollment (Save face descriptor)
+         */
+        enrollBtn.addEventListener('click', async () => {
+            const username = usernameRegisterInput.value.trim();
+            if (!username) {
+                updateStatus('Please enter a username before enrolling.', 'error');
+                return;
+            }
+            if (labeledDescriptors.some(ld => ld.label === username)) {
+                // If user exists, it's an update, which is allowed.
+                updateStatus(`Attempting to update face for existing user: ${username}...`, 'loading');
+            } else {
+                updateStatus(`Attempting to enroll new user: ${username}...`, 'loading');
+            }
+
+
+            // 1. Detect and extract descriptor
+            const fullFaceDescription = await faceapi.detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
+                .withFaceLandmarks()
+                .withFaceDescriptor();
+
+            if (!fullFaceDescription) {
+                updateStatus('No face detected! Please center your face in the camera.', 'error');
+                return;
+            }
+
+            // 2. Create LabeledFaceDescriptor
+            const descriptor = new faceapi.LabeledFaceDescriptors(username, [fullFaceDescription.descriptor]);
+
+            // 3. Update local array and database
+            const existingIndex = labeledDescriptors.findIndex(ld => ld.label === username);
+
+            if (existingIndex !== -1) {
+                // If user exists, replace the descriptor (update)
+                labeledDescriptors[existingIndex] = descriptor;
+                updateStatus(`SUCCESS: User '${username}' face descriptor was updated. Now log in.`, 'success');
+            } else {
+                // If new user, add the descriptor (enroll)
+                labeledDescriptors.push(descriptor);
+                updateStatus(`SUCCESS: User '${username}' enrolled! Proceed to login.`, 'success');
+            }
+
+            // 4. Save to database (localStorage) and re-initialize FaceMatcher
+            saveEnrolledFaces();
+            
+            // 5. AUTOMATICALLY switch to login view after successful registration
+            switchView('login');
+        });
+
+        /**
+         * Step 5: Handle Login (Strict comparison: Face AND Username must match)
+         */
+        loginBtn.addEventListener('click', async () => {
+            const claimedUsername = usernameLoginInput.value.trim();
+
+            if (labeledDescriptors.length === 0) {
+                 updateStatus('Database is empty. Please go to Registration and enroll a user first.', 'error');
+                 return;
+            }
+            if (!faceMatcher) {
+                updateStatus('Database is empty. Please go to Registration and enroll a user first.', 'error');
+                return;
+            }
+            if (!claimedUsername) {
+                updateStatus('Please enter the username you claim to be logging in as.', 'error');
+                return;
+            }
+
+            updateStatus(`Attempting to log in as ${claimedUsername} via face verification...`, 'loading');
+
+            // 1. Detect and extract descriptor for the current frame
+            const fullFaceDescription = await faceapi.detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
+                .withFaceLandmarks()
+                .withFaceDescriptor();
+
+            if (!fullFaceDescription) {
+                updateStatus('No face detected! Please center your face in the camera.', 'error');
+                return;
+            }
+
+            // 2. Find the best match
+            // A distance of 0.6 is a common threshold for a match
+            const bestMatch = faceMatcher.findBestMatch(fullFaceDescription.descriptor);
+            const matchLabel = bestMatch.label;
+            const matchDistance = bestMatch.distance.toFixed(2);
+            
+            // Condition 1: Face recognized and matches claimed username
+            if (matchLabel !== 'unknown' && matchLabel === claimedUsername && bestMatch.distance < 0.6) {
+                updateStatus(`LOGIN SUCCESS: Welcome, ${matchLabel}! (Match Quality: ${matchDistance})`, 'success');
+            } else {
+                // Condition 2: Login Failed (either face unknown OR face mismatch with claimed username)
+                let failureReason = '';
+                if (matchLabel === 'unknown' || bestMatch.distance >= 0.6) {
+                    failureReason = 'Face not recognized in the database or match quality too low.';
+                } else if (matchLabel !== claimedUsername) {
+                    failureReason = `Face recognized as '${matchLabel}' but claimed username is '${claimedUsername}'.`;
+                }
+                
+                updateStatus(`LOGIN FAILED: ${failureReason} (Best match distance: ${matchDistance})`, 'error');
+            }
+        });
+
+
+        // --- Navigation Event Listeners ---
+        goToLoginBtn.addEventListener('click', () => switchView('login'));
+        goToRegisterBtn.addEventListener('click', () => switchView('register'));
+
+
+        /**
+         * Simulated Database Functions (using localStorage)
+         */
+
+        /** Loads face descriptors from localStorage and initializes the FaceMatcher. */
+        function loadEnrolledFaces() {
+            const data = localStorage.getItem(ENROLLED_KEY);
+            labeledDescriptors = [];
+
+            if (data) {
+                try {
+                    const parsedData = JSON.parse(data);
+                    // Re-create LabeledFaceDescriptors instances from plain objects
+                    labeledDescriptors = parsedData.map(d =>
+                        new faceapi.LabeledFaceDescriptors(d.label, d.descriptors.map(desc => new Float32Array(Object.values(desc))))
+                    );
+
+                    faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, 0.6); // Threshold 0.6
+                } catch (e) {
+                    console.error("Failed to parse enrolled faces data:", e);
+                    localStorage.removeItem(ENROLLED_KEY);
+                }
+            }
+
+            dbStatusEl.textContent = `Enrolled Users: ${labeledDescriptors.length}`;
+        }
+
+        /** Saves the current face descriptors to localStorage. */
+        function saveEnrolledFaces() {
+            // Convert LabeledFaceDescriptors back to plain objects for JSON serialization
+            const serializableData = labeledDescriptors.map(d => ({
+                label: d.label,
+                descriptors: d.descriptors.map(desc => Array.from(desc))
+            }));
+
+            localStorage.setItem(ENROLLED_KEY, JSON.stringify(serializableData));
+            dbStatusEl.textContent = `Enrolled Users: ${labeledDescriptors.length}`;
+            faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, 0.6); // Re-initialize FaceMatcher
+        }
+
+        // --- Initialize the application ---
+        loadModels();
+        // Start on the login page as requested
+        switchView('login'); 
+    </script>
+</body>
+</html>
